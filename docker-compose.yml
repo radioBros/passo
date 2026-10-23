@@ -1,0 +1,177 @@
+# PASSO — single entry point. Every external port is env-configurable so the
+# stack can coexist with anything else on the host.
+#
+# Secrets use ${VAR:?msg}: compose REFUSES to start rather than silently
+# defaulting to a weak value.
+name: passo
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: passo-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    # Custom image: the official one lacks rabbitmq_delayed_message_exchange,
+    # without which the per-job-type retry ladder silently degrades to
+    # immediate redelivery — a hot loop against SdI.
+    build: ./docker/rabbitmq
+    image: passo-rabbitmq:local
+    container_name: passo-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes: [rabbitmq_data:/var/lib/rabbitmq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: passo-redis
+    command: ["redis-server", "--appendonly", "no"]
+    ports: ["${REDIS_PORT:-6379}:6379"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    image: passo:local
+    container_name: passo-migrate
+    command: ["node", "--experimental-strip-types", "scripts/migrate-and-provision.mjs"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_ADMIN_URL:?set DATABASE_ADMIN_URL in .env}
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    build: .
+    image: passo:local
+    container_name: passo-api
+    # Container hardening (SEC-032). Each line closes a specific escalation:
+    #   read_only        a compromised process cannot persist anything
+    #   no-new-privileges  setuid binaries cannot raise privilege
+    #   cap_drop ALL     nothing here needs a Linux capability
+    # /tmp is tmpfs because Node needs a writable temp dir, and xsltproc
+    # writes there while rendering.
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    command: ["node", "--experimental-strip-types", "src/index.ts", "api"]
+    env_file: [.env]
+    # PASSO_PORT is the EXTERNAL port and the only one an operator sets. The
+    # container always listens on 3000, pinned here so a stray PORT= in .env
+    # cannot move the app off the port this mapping targets.
+    environment:
+      PORT: 3000
+    ports: ["${PASSO_PORT:-3000}:3000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+      migrate:  {condition: service_completed_successfully}
+    healthcheck:
+      # Liveness only. Readiness deliberately excludes SdI vendors: an outage
+      # there must not take PASSO out of rotation, since Postgres is the
+      # durability boundary and queued invoices submit when the vendor returns.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: passo:local
+    container_name: passo-worker
+    # Container hardening (SEC-032). Each line closes a specific escalation:
+    #   read_only        a compromised process cannot persist anything
+    #   no-new-privileges  setuid binaries cannot raise privilege
+    #   cap_drop ALL     nothing here needs a Linux capability
+    # /tmp is tmpfs because Node needs a writable temp dir, and xsltproc
+    # writes there while rendering.
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    command: ["node", "--experimental-strip-types", "src/index.ts", "worker"]
+    env_file: [.env]
+    depends_on:
+      migrate:  {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  relay:
+    build: .
+    image: passo:local
+    container_name: passo-relay
+    # Container hardening (SEC-032). Each line closes a specific escalation:
+    #   read_only        a compromised process cannot persist anything
+    #   no-new-privileges  setuid binaries cannot raise privilege
+    #   cap_drop ALL     nothing here needs a Linux capability
+    # /tmp is tmpfs because Node needs a writable temp dir, and xsltproc
+    # writes there while rendering.
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    command: ["node", "--experimental-strip-types", "src/index.ts", "relay"]
+    env_file: [.env]
+    depends_on:
+      migrate:  {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # MCP speaks JSON-RPC over stdio, so it is not a long-running service.
+  # Start it on demand and scoped to ONE tenant:
+  #   docker compose run --rm -e PASSO_MCP_TENANT_ID=<uuid> mcp
+  # An MCP session sees exactly one tenant — that scoping is what makes
+  # exposing this to an LLM safe.
+  mcp:
+    build: .
+    image: passo:local
+    profiles: [mcp]
+    command: ["node", "--experimental-strip-types", "src/index.ts", "mcp"]
+    env_file: [.env]
+    depends_on:
+      postgres: {condition: service_healthy}
+    stdin_open: true
+    tty: false
+
+volumes:
+  postgres_data: {name: passo_postgres_data}
+  rabbitmq_data: {name: passo_rabbitmq_data}
+  redis_data:    {name: passo_redis_data}

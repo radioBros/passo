@@ -1,0 +1,22 @@
+# Gitleaks configuration: the default rules, plus an allowlist of the
+# EXAMPLE values that appear in documentation and test fixtures.
+#
+# Each entry is a literal example, not a pattern for "anything that looks like
+# a key" — a real secret committed anywhere still fails the scan. Add a value
+# here only after confirming it is a placeholder.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented example values and test fixtures — not real credentials"
+regexTarget = "secret"
+regexes = [
+  '''^YOUR_API_KEY$''',
+  '''^passo_live_\.\.\.$''',
+  '''^passo_live_kJ8x''',                   # docs/api example key (not even the real key format)
+  '''^whsec_x7Kp2mN9qR4tV6wY8zA1bC3d$''',   # docs/api example webhook secret
+  '''^Zm9vYmFyYmF6cXV4''',                   # base64("foobarbazqux") in config examples
+  '''^ik_test_abc123$''',                    # vendor-adapter test fixture
+  '''^apply_signature=(true|false)$''',      # OpenAPI.it registry setting named in prose
+  '''^80e19746-1537-40ab-9612-23d811770e1a$''', # sandbox NOTIFICATION id in a recorded receipt fixture
+]

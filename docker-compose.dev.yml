@@ -1,0 +1,52 @@
+# Development overlay.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Differences from the production stack, each deliberate:
+#
+#   * Source is bind-mounted and Node watches it, so an edit restarts the
+#     service instead of requiring a rebuild.
+#   * Postgres, RabbitMQ management and Redis are published to the host so you
+#     can attach psql, the RabbitMQ UI and redis-cli directly.
+#   * Log level drops to debug.
+#
+# It does NOT relax any security control: RLS, the role separation, the enum
+# constraints and the boot refusal all behave exactly as in production. A dev
+# stack that is easier to pass than the real one teaches the wrong lesson.
+services:
+  api:
+    command: ["node", "--experimental-strip-types", "--watch", "src/index.ts", "api"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./assets:/app/assets:ro
+    environment:
+      LOG_LEVEL: debug
+      NODE_ENV: development
+
+  worker:
+    command: ["node", "--experimental-strip-types", "--watch", "src/index.ts", "worker"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./assets:/app/assets:ro
+    environment:
+      LOG_LEVEL: debug
+      NODE_ENV: development
+
+  relay:
+    command: ["node", "--experimental-strip-types", "--watch", "src/index.ts", "relay"]
+    volumes:
+      - ./src:/app/src:ro
+    environment:
+      LOG_LEVEL: debug
+      NODE_ENV: development
+
+  postgres:
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+
+  redis:
+    ports: ["${REDIS_PORT:-6379}:6379"]

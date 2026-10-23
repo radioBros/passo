@@ -1,0 +1,3358 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PASSO",
+    "version": "1.0.0",
+    "description": "Italian e-invoicing relay: CRM to Sistema di Interscambio via a pluggable channel.\n\n**Three rules that catch most integrations:**\n\n1. **NS is terminal.** The invoice is legally *not issued*. Fix it and submit a NEW\n   invoice — `/retry` refuses with 409. Auto-retrying sends a duplicate to the tax authority.\n2. **MC is not a failure.** The invoice IS issued; SdI is still delivering. Do not resubmit.\n3. **Money is a string.** `\"1000.00\"`, never `1000`. FatturaPA amounts are patterned\n   strings with exactly two decimals; a bare integer is schema-invalid.\n\n**Dual mode.** `mode: \"async\"` (default) returns 202 and reports progress by webhook.\n`mode: \"sync\"` holds the connection until the invoice reaches SdI — it waits for the\n**AT milestone only**, never RC, MC or DT, because MC delivery retry legally runs for\ndays and no HTTP timeout can represent it. On timeout you get a 202 and the job\ncontinues untouched.\n\nPASSO keeps **no invoice archive**. Payloads are purged once a terminal receipt\narrives; fetch what you need before then. Purged submissions return `410 Gone`.",
+    "license": {
+      "name": "AGPL-3.0-or-later"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "API root"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A tenant API key (`passo_…`)"
+      },
+      "AdminKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The master admin key, set at install"
+      }
+    },
+    "schemas": {
+      "Invoice": {
+        "type": "object",
+        "properties": {
+          "documentType": {
+            "type": "string",
+            "enum": [
+              "TD01",
+              "TD02",
+              "TD03",
+              "TD04",
+              "TD05",
+              "TD06",
+              "TD16",
+              "TD17",
+              "TD18",
+              "TD19",
+              "TD20",
+              "TD21",
+              "TD22",
+              "TD23",
+              "TD24",
+              "TD25",
+              "TD26",
+              "TD27",
+              "TD28",
+              "TD29"
+            ],
+            "default": "TD01"
+          },
+          "number": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$",
+            "default": "EUR"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "FPA12",
+              "FPR12"
+            ]
+          },
+          "recipientCode": {
+            "type": "string",
+            "pattern": "^[A-Z0-9]{6,7}$"
+          },
+          "recipientPec": {
+            "type": "string",
+            "format": "email"
+          },
+          "seller": {
+            "type": "object",
+            "properties": {
+              "vatId": {
+                "type": "object",
+                "properties": {
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 28,
+                    "pattern": "^[^A-Z]{0,0}[A-Za-z0-9]+$"
+                  }
+                },
+                "required": [
+                  "country",
+                  "code"
+                ],
+                "additionalProperties": false
+              },
+              "taxCode": {
+                "type": "string",
+                "minLength": 11,
+                "maxLength": 16
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "firstName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "lastName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "address": {
+                "type": "object",
+                "properties": {
+                  "street": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "streetNumber": {
+                    "type": "string",
+                    "maxLength": 8
+                  },
+                  "postalCode": {
+                    "type": "string",
+                    "pattern": "^\\d{5}$"
+                  },
+                  "city": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "province": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$",
+                    "default": "IT"
+                  }
+                },
+                "required": [
+                  "street",
+                  "postalCode",
+                  "city"
+                ],
+                "additionalProperties": false
+              },
+              "taxRegime": {
+                "type": "string",
+                "enum": [
+                  "RF01",
+                  "RF02",
+                  "RF04",
+                  "RF05",
+                  "RF06",
+                  "RF07",
+                  "RF08",
+                  "RF09",
+                  "RF10",
+                  "RF11",
+                  "RF12",
+                  "RF13",
+                  "RF14",
+                  "RF15",
+                  "RF16",
+                  "RF17",
+                  "RF18",
+                  "RF19",
+                  "RF20"
+                ]
+              }
+            },
+            "required": [
+              "address"
+            ],
+            "additionalProperties": false
+          },
+          "buyer": {
+            "type": "object",
+            "properties": {
+              "vatId": {
+                "type": "object",
+                "properties": {
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 28,
+                    "pattern": "^[^A-Z]{0,0}[A-Za-z0-9]+$"
+                  }
+                },
+                "required": [
+                  "country",
+                  "code"
+                ],
+                "additionalProperties": false
+              },
+              "taxCode": {
+                "type": "string",
+                "minLength": 11,
+                "maxLength": 16
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "firstName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "lastName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "address": {
+                "type": "object",
+                "properties": {
+                  "street": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "streetNumber": {
+                    "type": "string",
+                    "maxLength": 8
+                  },
+                  "postalCode": {
+                    "type": "string",
+                    "pattern": "^\\d{5}$"
+                  },
+                  "city": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "province": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$",
+                    "default": "IT"
+                  }
+                },
+                "required": [
+                  "street",
+                  "postalCode",
+                  "city"
+                ],
+                "additionalProperties": false
+              },
+              "taxRegime": {
+                "type": "string",
+                "enum": [
+                  "RF01",
+                  "RF02",
+                  "RF04",
+                  "RF05",
+                  "RF06",
+                  "RF07",
+                  "RF08",
+                  "RF09",
+                  "RF10",
+                  "RF11",
+                  "RF12",
+                  "RF13",
+                  "RF14",
+                  "RF15",
+                  "RF16",
+                  "RF17",
+                  "RF18",
+                  "RF19",
+                  "RF20"
+                ]
+              }
+            },
+            "required": [
+              "address"
+            ],
+            "additionalProperties": false
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "lineNumber": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "quantity": {
+                  "type": "string",
+                  "pattern": "^\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "unitOfMeasure": {
+                  "type": "string",
+                  "maxLength": 10
+                },
+                "unitPrice": {
+                  "type": "string",
+                  "pattern": "^-?\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "totalPrice": {
+                  "type": "string",
+                  "pattern": "^-?\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "vatRate": {
+                  "type": "string",
+                  "pattern": "^\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "nature": {
+                  "type": "string",
+                  "enum": [
+                    "N1",
+                    "N2",
+                    "N2.1",
+                    "N2.2",
+                    "N3",
+                    "N3.1",
+                    "N3.2",
+                    "N3.3",
+                    "N3.4",
+                    "N3.5",
+                    "N3.6",
+                    "N4",
+                    "N5",
+                    "N6",
+                    "N6.1",
+                    "N6.2",
+                    "N6.3",
+                    "N6.4",
+                    "N6.5",
+                    "N6.6",
+                    "N6.7",
+                    "N6.8",
+                    "N6.9",
+                    "N7"
+                  ]
+                }
+              },
+              "required": [
+                "lineNumber",
+                "description",
+                "unitPrice",
+                "totalPrice",
+                "vatRate"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "summaries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "vatRate": {
+                  "type": "string",
+                  "pattern": "^\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "nature": {
+                  "type": "string",
+                  "enum": [
+                    "N1",
+                    "N2",
+                    "N2.1",
+                    "N2.2",
+                    "N3",
+                    "N3.1",
+                    "N3.2",
+                    "N3.3",
+                    "N3.4",
+                    "N3.5",
+                    "N3.6",
+                    "N4",
+                    "N5",
+                    "N6",
+                    "N6.1",
+                    "N6.2",
+                    "N6.3",
+                    "N6.4",
+                    "N6.5",
+                    "N6.6",
+                    "N6.7",
+                    "N6.8",
+                    "N6.9",
+                    "N7"
+                  ]
+                },
+                "taxableAmount": {
+                  "type": "string",
+                  "pattern": "^-?\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "taxAmount": {
+                  "type": "string",
+                  "pattern": "^-?\\d{1,11}(\\.\\d{1,8})?$"
+                },
+                "vatCollectability": {
+                  "type": "string",
+                  "enum": [
+                    "D",
+                    "I",
+                    "S"
+                  ]
+                },
+                "lawReference": {
+                  "type": "string",
+                  "maxLength": 100
+                }
+              },
+              "required": [
+                "vatRate",
+                "taxableAmount",
+                "taxAmount"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "payment": {
+            "type": "object",
+            "properties": {
+              "conditions": {
+                "type": "string",
+                "enum": [
+                  "TP01",
+                  "TP02",
+                  "TP03"
+                ]
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "MP01",
+                  "MP02",
+                  "MP03",
+                  "MP04",
+                  "MP05",
+                  "MP06",
+                  "MP07",
+                  "MP08",
+                  "MP09",
+                  "MP10",
+                  "MP11",
+                  "MP12",
+                  "MP13",
+                  "MP14",
+                  "MP15",
+                  "MP16",
+                  "MP17",
+                  "MP18",
+                  "MP19",
+                  "MP20",
+                  "MP21",
+                  "MP22",
+                  "MP23"
+                ]
+              },
+              "dueDate": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "amount": {
+                "type": "string",
+                "pattern": "^-?\\d{1,11}(\\.\\d{1,8})?$"
+              },
+              "iban": {
+                "type": "string",
+                "pattern": "^[A-Z]{2}\\d{2}[A-Za-z0-9]{11,30}$"
+              }
+            },
+            "required": [
+              "conditions",
+              "method"
+            ],
+            "additionalProperties": false
+          },
+          "cig": {
+            "type": "string",
+            "maxLength": 15
+          },
+          "cup": {
+            "type": "string",
+            "maxLength": 15
+          },
+          "purchaseOrderId": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "stampDuty": {
+            "type": "object",
+            "properties": {
+              "virtual": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              },
+              "amount": {
+                "type": "string",
+                "pattern": "^\\d{1,11}(\\.\\d{1,8})?$"
+              }
+            },
+            "required": [
+              "virtual",
+              "amount"
+            ],
+            "additionalProperties": false
+          },
+          "contractId": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "conventionId": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "receptionId": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "format": {
+                  "type": "string",
+                  "maxLength": 10
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "content": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "number",
+          "date",
+          "format",
+          "recipientCode",
+          "seller",
+          "buyer",
+          "lines",
+          "summaries"
+        ],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "ERR_AUTH_MISSING",
+                  "ERR_AUTH_INVALID",
+                  "ERR_AUTH_EXPIRED",
+                  "ERR_AUTH_REVOKED",
+                  "ERR_AUTH_SCOPE",
+                  "ERR_NOT_FOUND",
+                  "ERR_GONE",
+                  "ERR_SCHEMA_INVALID",
+                  "ERR_NATURA_REQUIRED",
+                  "ERR_VALIDATION_PEC_REQUIRED",
+                  "ERR_XSD_INVALID",
+                  "ERR_XSD_UNAVAILABLE",
+                  "ERR_CHANNEL_UNAVAILABLE",
+                  "ERR_CHANNEL_TIMEOUT",
+                  "ERR_CHANNEL_AUTH",
+                  "ERR_CHANNEL_REJECTED",
+                  "ERR_CHANNEL_NOT_CONFIGURED",
+                  "ERR_CHANNEL_SETUP",
+                  "ERR_CHANNEL_CREDIT",
+                  "ERR_RATE_LIMITED",
+                  "ERR_MESSAGE_TOO_LARGE",
+                  "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                  "ERR_RENDER_FAILED",
+                  "ERR_TRANSFORM_FAILED",
+                  "ERR_PAYLOAD_TOO_LARGE",
+                  "ERR_UNSUPPORTED_MEDIA_TYPE",
+                  "ERR_CONFLICT_IDEMPOTENCY",
+                  "ERR_CONFLICT_NS_RETRY",
+                  "ERR_CONFLICT_TERMINAL",
+                  "ERR_CONFLICT_MC_RETRY",
+                  "ERR_INTERNAL"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "details": {
+                "type": "array",
+                "items": {}
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "retryable"
+            ]
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
+      "SubmissionAccepted": {
+        "type": "object",
+        "properties": {
+          "submissionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string"
+          },
+          "invoiceNumber": {
+            "type": "string"
+          },
+          "progressivoInvio": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trackingUrl": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "ApiKey": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Invoices",
+      "description": "Submit and track invoices"
+    },
+    {
+      "name": "Transformations",
+      "description": "Map your CRM shape onto the canonical model"
+    },
+    {
+      "name": "Webhooks",
+      "description": "Subscriptions and delivery history"
+    },
+    {
+      "name": "Reference",
+      "description": "Error codes, events and scopes"
+    },
+    {
+      "name": "Admin",
+      "description": "Operator surface — requires the admin key"
+    }
+  ],
+  "paths": {
+    "/invoices": {
+      "post": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Submit an invoice",
+        "operationId": "submitInvoice",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Replaying the same key returns the original result; a different body is a 409."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "sellerId",
+                  "invoice"
+                ],
+                "properties": {
+                  "sellerId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "invoice": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/Invoice"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ],
+                    "description": "Canonical model, or your own shape when `transformation` is set"
+                  },
+                  "transformation": {
+                    "type": "string",
+                    "description": "Name of a saved template. Never applied implicitly."
+                  },
+                  "crmInvoiceRef": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "async",
+                      "sync"
+                    ],
+                    "default": "async"
+                  },
+                  "syncTimeoutMs": {
+                    "type": "integer",
+                    "description": "Capped server-side; never raises the configured maximum."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sync mode: the AT milestone was reached before the timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionAccepted"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted and queued",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Requests allowed per window"
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Requests left in this window"
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Seconds until the window resets"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Schema or transformation failure — both source and target paths are named",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key lacks `invoices:write`; the response names the required scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency key reused with a different body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited — see Retry-After",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "List submissions",
+        "operationId": "listInvoices",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sellerId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "documentType",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque `nextCursor` from the previous page. Cursor, not offset: an offset skips rows under concurrent inserts."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of submissions"
+          },
+          "403": {
+            "description": "Requires `invoices:read`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invoices/{id}": {
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Submission status",
+        "operationId": "getInvoice",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status plus any receipts, with SdI rejection codes enriched"
+          },
+          "404": {
+            "description": "Not found, or belongs to another tenant — deliberately indistinguishable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invoices/{id}/receipts": {
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "SdI receipts for a submission",
+        "operationId": "getInvoiceReceipts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every notification, oldest first"
+          },
+          "404": {
+            "description": "Not found, or belongs to another tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invoices/{id}/ack": {
+      "post": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Acknowledge receipts",
+        "operationId": "ackInvoiceReceipts",
+        "description": "Makes receipts purge-eligible after RECEIPT_ACK_GRACE_DAYS. A replay is a no-op.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ acknowledged: n }"
+          }
+        }
+      }
+    },
+    "/render": {
+      "post": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Render arbitrary FatturaPA or notification XML",
+        "operationId": "renderXml",
+        "description": "Official AdE stylesheet. Lets a CRM display an invoice PASSO has already purged.",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Notification type (RC, NS, …) when the body is a receipt"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/xml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "HTML",
+            "content": {
+              "text/html": {}
+            }
+          },
+          "400": {
+            "description": "Empty body or over PASSO_MAX_RENDER_BYTES",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invoices/{id}/retry": {
+      "post": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Retry a failed submission",
+        "operationId": "retryInvoice",
+        "description": "REFUSES an NS (terminal — issue a new invoice) and an MC (still delivering).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Requeued"
+          },
+          "409": {
+            "description": "NS or MC — retrying would duplicate at the tax authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invoices/{id}/xml": {
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "The transmitted FatturaPA XML",
+        "operationId": "getInvoiceXml",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "XML",
+            "content": {
+              "application/xml": {}
+            }
+          },
+          "410": {
+            "description": "Purged after a terminal receipt — PASSO is a relay, not an archive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invoices/{id}/rendered": {
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Human-readable rendering via the official AdE stylesheet",
+        "operationId": "getInvoiceRendered",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML",
+            "content": {
+              "text/html": {}
+            }
+          },
+          "410": {
+            "description": "Purged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/starter-templates": {
+      "get": {
+        "tags": [
+          "Transformations"
+        ],
+        "summary": "List starter templates",
+        "operationId": "listStarterTemplates",
+        "description": "Teaching examples. Not mappings for a named CRM.",
+        "responses": {
+          "200": {
+            "description": "key, name, description, suits, rule count"
+          }
+        }
+      }
+    },
+    "/starter-templates/{key}": {
+      "get": {
+        "tags": [
+          "Transformations"
+        ],
+        "summary": "One starter template",
+        "operationId": "getStarterTemplate",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full template including rules"
+          },
+          "404": {
+            "description": "Unknown starter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transformations/from-starter/{key}": {
+      "post": {
+        "tags": [
+          "Transformations"
+        ],
+        "summary": "Clone a starter into this tenant",
+        "operationId": "cloneStarterTemplate",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Replaced existing name"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "404": {
+            "description": "Unknown starter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transformations/test": {
+      "post": {
+        "tags": [
+          "Transformations"
+        ],
+        "summary": "Dry-run a mapping",
+        "operationId": "testTransformation",
+        "description": "Submits nothing, queues nothing, persists nothing. Returns a per-rule trace and EVERY error at once.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "payload"
+                ],
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "description": "Your CRM-shaped invoice"
+                  },
+                  "transformation": {
+                    "type": "string",
+                    "description": "A saved template name"
+                  },
+                  "template": {
+                    "type": "object",
+                    "description": "An inline unsaved template, to iterate before saving"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "output, trace, errors, canonicalValid"
+          },
+          "400": {
+            "description": "Neither a name nor an inline template was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Create a subscription",
+        "operationId": "createWebhook",
+        "description": "The signing secret is returned ONCE and never again.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "callbackUrl"
+                ],
+                "properties": {
+                  "callbackUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "invoice.submitted",
+                        "invoice.transmitted",
+                        "invoice.delivered",
+                        "invoice.rejected",
+                        "invoice.exception",
+                        "invoice.transmitted_undelivered",
+                        "invoice.accepted_by_pa",
+                        "invoice.rejected_by_pa",
+                        "invoice.status_changed",
+                        "invoice.timeout",
+                        "submission.failed",
+                        "apikey.expiring",
+                        "apikey.expired"
+                      ]
+                    }
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created; `secret` is shown once"
+          },
+          "400": {
+            "description": "Unknown event, or a callback URL that resolves to a private range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "List subscriptions",
+        "operationId": "listWebhooks",
+        "responses": {
+          "200": {
+            "description": "Subscriptions — secrets are never returned"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}": {
+      "patch": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Update a subscription",
+        "operationId": "updateWebhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "callbackUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated"
+          },
+          "404": {
+            "description": "Unknown webhook",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Delete a subscription",
+        "operationId": "deleteWebhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "Unknown webhook",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/rotate-secret": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Rotate the signing secret",
+        "operationId": "rotateWebhookSecret",
+        "description": "Both signatures are sent during the overlap window, so a receiver can redeploy without downtime. Parse EVERY `v1=` in the header, not just the last.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new secret and the overlap window"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Delivery history",
+        "operationId": "listWebhookDeliveries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "eventType",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "delivered",
+                "failed"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attempts, status codes and errors"
+          }
+        }
+      }
+    },
+    "/invoices/{id}/export": {
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Pre-purge export package",
+        "operationId": "exportInvoice",
+        "description": "Everything PASSO holds for one submission — XML, rendering, receipts and hashes — in one call. Hashes are computed over the PLAINTEXT XML bytes so you can verify them independently. Take this BEFORE the terminal receipt arrives: afterwards the payload is purged and this returns 410.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The complete package"
+          },
+          "410": {
+            "description": "Purged — PASSO holds no archive and there is no recovery path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/privacy/erasure": {
+      "post": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "Data-subject erasure enquiry",
+        "operationId": "erasureRequest",
+        "description": "Reports what PASSO actually holds for a subject. Almost always: nothing beyond configuration, because the CRM holds the archive. An in-flight document is refused for the LIVE TRANSMISSION, never for a retention duty PASSO does not have.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "vatId": {
+                    "type": "string"
+                  },
+                  "taxCode": {
+                    "type": "string"
+                  },
+                  "subjectRef": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What is held, and whether it is erasable"
+          },
+          "400": {
+            "description": "No subject identifier supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/inbound/{token}": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Vendor notification callback",
+        "operationId": "inboundNotification",
+        "security": [],
+        "description": "Where Invoicetronic and OpenAPI.it push receipts. Authenticated by the per-tenant token in the path — vendor consoles frequently cannot send custom headers. Returns 200 even for a duplicate or a quarantine, so the vendor stops retrying something already handled.",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/xml": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Received (applied, duplicate or quarantined)"
+          },
+          "400": {
+            "description": "Unparseable — the payload is never echoed back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unknown token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the inbound limit, refused before parsing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ERR_AUTH_MISSING",
+                            "ERR_AUTH_INVALID",
+                            "ERR_AUTH_EXPIRED",
+                            "ERR_AUTH_REVOKED",
+                            "ERR_AUTH_SCOPE",
+                            "ERR_NOT_FOUND",
+                            "ERR_GONE",
+                            "ERR_SCHEMA_INVALID",
+                            "ERR_NATURA_REQUIRED",
+                            "ERR_VALIDATION_PEC_REQUIRED",
+                            "ERR_XSD_INVALID",
+                            "ERR_XSD_UNAVAILABLE",
+                            "ERR_CHANNEL_UNAVAILABLE",
+                            "ERR_CHANNEL_TIMEOUT",
+                            "ERR_CHANNEL_AUTH",
+                            "ERR_CHANNEL_REJECTED",
+                            "ERR_CHANNEL_NOT_CONFIGURED",
+                            "ERR_CHANNEL_SETUP",
+                            "ERR_CHANNEL_CREDIT",
+                            "ERR_RATE_LIMITED",
+                            "ERR_MESSAGE_TOO_LARGE",
+                            "ERR_VALIDATION_SIGNATURE_REQUIRED",
+                            "ERR_RENDER_FAILED",
+                            "ERR_TRANSFORM_FAILED",
+                            "ERR_PAYLOAD_TOO_LARGE",
+                            "ERR_UNSUPPORTED_MEDIA_TYPE",
+                            "ERR_CONFLICT_IDEMPOTENCY",
+                            "ERR_CONFLICT_NS_RETRY",
+                            "ERR_CONFLICT_TERMINAL",
+                            "ERR_CONFLICT_MC_RETRY",
+                            "ERR_INTERNAL"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-events": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "Event catalogue",
+        "operationId": "listWebhookEvents",
+        "responses": {
+          "200": {
+            "description": "Each event with terminal / legallyIssued / action"
+          }
+        }
+      }
+    },
+    "/sdi-errors": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "The 63 SdI rejection codes",
+        "operationId": "listSdiErrors",
+        "responses": {
+          "200": {
+            "description": "63 codes with descriptions and remedies"
+          }
+        }
+      }
+    },
+    "/sdi-errors/{code}": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "One SdI rejection code",
+        "operationId": "getSdiError",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Code, description and remedy"
+          }
+        }
+      }
+    },
+    "/scopes": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "API key scopes",
+        "operationId": "listScopes",
+        "responses": {
+          "200": {
+            "description": "8 scopes"
+          }
+        }
+      }
+    },
+    "/pending": {
+      "get": {
+        "tags": [
+          "Invoices"
+        ],
+        "summary": "Submissions awaiting acknowledgement",
+        "operationId": "listPending",
+        "responses": {
+          "200": {
+            "description": "Unacknowledged receipts — these are never purged"
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "Liveness",
+        "operationId": "healthLive",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The process is up. Checks nothing external."
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "summary": "Readiness",
+        "operationId": "healthReady",
+        "security": [],
+        "description": "Postgres, RabbitMQ and Redis. Deliberately EXCLUDES SdI vendors: a vendor outage must not take PASSO out of rotation.",
+        "responses": {
+          "200": {
+            "description": "Ready"
+          },
+          "503": {
+            "description": "A dependency is down"
+          }
+        }
+      }
+    }
+  }
+}

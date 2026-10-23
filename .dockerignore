@@ -1,0 +1,14 @@
+# node_modules MUST be excluded: copying a host-built native module produces
+# "invalid ELF header" at runtime (macOS binary inside a Linux image).
+node_modules
+npm-debug.log*
+dist
+coverage
+.git
+.env
+.env.*
+!.env.example
+# The planning tree is not shipped.
+development
+*.md
+!README.md

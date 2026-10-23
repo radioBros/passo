@@ -1,0 +1,186 @@
+name: CI
+on: [push, pull_request]
+
+env:
+  # Ports are env-configurable so CI can avoid collisions.
+  POSTGRES_PORT: 5432
+  RABBITMQ_PORT: 5672
+  REDIS_PORT: 6379
+
+jobs:
+  quality:
+    name: Lint, types, unit + integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_USER: passo_admin
+          POSTGRES_DB: passo
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U passo_admin -d passo"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+
+      # xsltproc renders the official AdE stylesheets; libxml2 backs libxmljs2.
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y xsltproc libxml2-dev
+
+      # The delayed-message plugin is NOT in the official RabbitMQ image, and
+      # without it the retry ladder silently degrades to immediate redelivery.
+      # CI must exercise the same custom image production uses.
+      - name: Start RabbitMQ with the delayed-message plugin
+        run: |
+          docker build -t passo-rabbitmq:ci docker/rabbitmq
+          # 15672 is the management API, which the boot-refusal tests use to
+          # provision an isolated vhost. It is NOT adjacent to the AMQP port,
+          # so it must be published explicitly rather than derived.
+          docker run -d --name rabbit -p 5672:5672 -p 15672:15672 \
+            -e RABBITMQ_DEFAULT_USER=passo -e RABBITMQ_DEFAULT_PASS=testpass \
+            passo-rabbitmq:ci
+          for i in $(seq 1 40); do
+            docker exec rabbit rabbitmq-diagnostics -q ping && break || sleep 3
+          done
+          docker exec rabbit rabbitmq-plugins list -e | grep delayed
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # DOC-006: a schema change without regenerating the contract fails here,
+      # so the published OpenAPI can never drift from the validation that runs.
+      - name: OpenAPI contract is current
+        run: npm run check:openapi
+
+      # DOC-003: legal-accuracy rules, not style. PASSO is not an accredited
+      # intermediary, holds no certification, and does not do conservazione —
+      # a doc that says otherwise misleads an operator into not archiving.
+      - name: Documentation claims lint
+        run: npm run lint:docs
+
+      # DOC-033: VitePress fails the build on a dead internal link, so this
+      # catches a renamed page before a reader hits a 404.
+      - name: Documentation builds with no dead links
+        run: npm run docs:build
+
+      - name: Migrate and provision roles
+        env:
+          DATABASE_URL: postgres://passo_admin:testpass@localhost:5432/passo
+          PASSO_DB_PASSWORD: apppass
+        run: node --experimental-strip-types scripts/migrate-and-provision.mjs
+
+      - name: Test with coverage
+        env:
+          TEST_DATABASE_URL: postgres://passo_app:apppass@localhost:5432/passo
+          TEST_RABBITMQ_URL: amqp://passo:testpass@localhost:5672
+          # Set explicitly: the management port is not adjacent to the AMQP one.
+          TEST_RABBITMQ_MGMT: http://localhost:15672
+          TEST_REDIS_URL: redis://localhost:6379
+        run: npm run test:coverage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: coverage, path: coverage/ }
+
+  security:
+    name: Dependency + secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+      # The gitleaks CLI is free and open source; gitleaks-action needs a paid
+      # licence on organisation-owned repositories. Scans the FULL history
+      # (fetch-depth 0 above). Example values are allowlisted in .gitleaks.toml.
+      - name: Secret scan
+        run: |
+          V=8.30.1
+          curl -sSfL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz"
+          curl -sSfL -o checksums.txt \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_checksums.txt"
+          grep " gitleaks_${V}_linux_x64.tar.gz$" checksums.txt | sed "s| gitleaks_.*| gitleaks.tgz|" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks git . --config .gitleaks.toml --redact --no-banner -v
+
+  image:
+    name: Build and verify the runtime image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t passo:ci .
+      - name: Verify native paths inside the image
+        # libxmljs2 must load and xsltproc must render. A host-built
+        # node_modules leaking in surfaces here as "invalid ELF header".
+        run: |
+          docker run --rm passo:ci node --experimental-strip-types -e "
+            import { validateInvoiceXml } from './src/infra/render/xsd.ts';
+            import { renderNotification } from './src/infra/render/xslt.ts';
+            const r = validateInvoiceXml('<?xml version=\"1.0\"?><Foo/>');
+            if (r.valid !== false || !r.errors.length) { console.error('XSD FAIL'); process.exit(1); }
+            const h = await renderNotification(
+              '<?xml version=\"1.0\"?><types:RicevutaConsegna xmlns:types=\"http://www.fatturapa.gov.it/sdi/messaggi/v1.0\"><IdentificativoSdI>1</IdentificativoSdI></types:RicevutaConsegna>', 'RC');
+            if (!h || h.length < 200) { console.error('RENDER FAIL'); process.exit(1); }
+            console.log('native paths OK');"
+      - name: Scan image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: passo:ci
+          severity: HIGH,CRITICAL
+          # Fail on anything that HAS a fix. Debian findings with no published
+          # fix (affected / fix_deferred / will_not_fix) cannot be cleared by
+          # any change here; failing on them would only teach people to ignore
+          # a permanently red scan. The Dockerfile runs `apt-get upgrade`.
+          ignore-unfixed: true
+          exit-code: '1'
+
+  stack:
+    name: Full stack smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate .env
+        run: |
+          sed -e "s|CHANGE_ME_postgres_admin_password|$(openssl rand -hex 16)|g" \
+              -e "s|CHANGE_ME_app_db_password|$(openssl rand -hex 16)|g" \
+              -e "s|CHANGE_ME_rabbitmq_password|$(openssl rand -hex 16)|g" \
+              -e "s|CHANGE_ME_admin_key_at_least_24_chars|$(openssl rand -base64 32 | tr -d '\n')|" \
+              -e "s|CHANGE_ME_base64_32_bytes|$(openssl rand -base64 32 | tr -d '\n')|" \
+              .env.example > .env
+      - name: Bring the stack up
+        run: docker compose up -d --build --wait
+      - name: Health checks
+        run: |
+          curl -fsS localhost:3000/health/live
+          curl -fsS localhost:3000/health/ready
+      - name: Admin round-trip
+        run: |
+          ADMIN=$(grep '^PASSO_ADMIN_KEY=' .env | cut -d= -f2-)
+          TID=$(curl -fsS -X POST localhost:3000/api/v1/admin/tenants \
+            -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+            -d '{"name":"CI","slug":"ci","transmitterCode":"01234567890"}' | jq -r .id)
+          test -n "$TID"
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs

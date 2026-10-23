@@ -1,0 +1,24 @@
+name: Feature request
+description: A capability PASSO does not have
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you cannot do today, and who it hurts (CRM integrator or operator).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: A concrete shape — endpoint, event, or operator step. Not "make it easier".
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        Out of scope for 1.x unless you argue otherwise: a web UI, inbound
+        reception (MT/EC/SE), pre-signed `.p7m` upload, claiming accreditation
+        or *conservazione*.

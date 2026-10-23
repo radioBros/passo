@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/radioBros/passo/blob/main/docs/guide/getting-started.md
+    about: Getting started, architecture, API and operations
+  - name: Security vulnerability
+    url: https://github.com/radioBros/passo/security/advisories/new
+    about: Private report — do not open a public issue

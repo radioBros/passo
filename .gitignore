@@ -1,0 +1,12 @@
+/development/
+PASSO_PLAN.md
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+docs/.vitepress/cache
+docs/.vitepress/dist

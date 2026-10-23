@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 117 150" role="img" aria-label="PASSO">
+  <defs>
+    <linearGradient id="p" x1="14" y1="138" x2="108" y2="14" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#02133A"/>
+      <stop offset=".4" stop-color="#1248D8"/>
+      <stop offset="1" stop-color="#4BA6FF"/>
+    </linearGradient>
+  </defs>
+  <path fill="none" stroke="url(#p)" stroke-width="36" stroke-linecap="round"
+        d="M38 128 V58 C38 24 100 20 104 60"/>
+  <path fill="url(#p)" d="M80 40 L114 64 L80 88 Z"/>
+</svg>
