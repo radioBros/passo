@@ -1,0 +1,4 @@
+# Zod 3 — GHSA-mrhx-c7xc-m3w5 / oversized-collection DoS is only fixed in Zod 4,
+# which changes schema internals this repo walks (src/domain/transform/targets.ts).
+# Invoice bodies are already capped at 10MB. Revisit when moving to Zod 4.
+GHSA-mrhx-c7xc-m3w5

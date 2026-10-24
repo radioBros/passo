@@ -108,7 +108,7 @@ jobs:
         with: { node-version: '22', cache: 'npm' }
       - run: npm ci
       - name: Dependency audit
-        run: npm audit --audit-level=high
+        run: node scripts/audit.mjs
       # The gitleaks CLI is free and open source; gitleaks-action needs a paid
       # licence on organisation-owned repositories. Scans the FULL history
       # (fetch-depth 0 above). Example values are allowlisted in .gitleaks.toml.
@@ -148,6 +148,7 @@ jobs:
         with:
           image-ref: passo:ci
           severity: HIGH,CRITICAL
+          trivyignores: .trivyignore
           # Fail on anything that HAS a fix. Debian findings with no published
           # fix (affected / fix_deferred / will_not_fix) cannot be cleared by
           # any change here; failing on them would only teach people to ignore
